@@ -36,6 +36,13 @@ serde_json.workspace = true
 thiserror.workspace = true
 ucs2.workspace = true
 
+[target.'cfg(windows)'.dependencies.winapi]
+features = [
+  "libloaderapi",
+  "errhandlingapi",
+]
+workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 
