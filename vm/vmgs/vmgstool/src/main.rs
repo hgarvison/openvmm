@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-// UNSAFETY: Loading a dll is inherently unsafe
-#![cfg_attr(all(windows, guest_arch = "x86_64"), expect(unsafe_code))]
+// UNSAFETY: Loading a dll is inheritently unsafe
+#![cfg_attr(windows, expect(unsafe_code))]
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]
@@ -95,7 +95,7 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     #[error("Unable to read IGVM file with Error: {0}")]
     UnableToReadIgvmFile(String),
 }
@@ -131,7 +131,7 @@ enum ExitCode {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 enum ResourceCode {
     NonConfidential = 13510,
     Snp = 13515,
@@ -296,7 +296,7 @@ enum Options {
     /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
     ///
     /// The proper key file must be specified to write encrypted data.
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     CopyIgvmfile {
         /// VMGS file path
         #[command(flatten)]
@@ -309,7 +309,7 @@ enum Options {
         /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
         #[clap(long, alias = "allowoverwrite")]
         allow_overwrite: bool,
-        /// Resource code. Supported values: nonconfidential, snp, tdx, snp_no_hcl, and tdx_no_hcl
+        /// Resource code. Currently nonconfidential, snp, and tdx are the only values supported.
         #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
         resource_code: ResourceCode,
     },
@@ -342,7 +342,7 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     }
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
     match resource_code {
         "nonconfidential" => Ok(ResourceCode::NonConfidential),
@@ -522,7 +522,7 @@ async fn do_main() -> Result<(), Error> {
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
-        #[cfg(all(windows, guest_arch = "x86_64"))]
+        #[cfg(windows)]
         Options::CopyIgvmfile {
             file_path,
             data_path,
@@ -1172,7 +1172,7 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     Ok(disk)
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
@@ -1197,7 +1197,7 @@ async fn vmgs_file_copy_igvmfile(
     Ok(())
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn write_igvmfile(
     vmgs: &mut Vmgs,
     encrypt: bool,
@@ -1205,9 +1205,7 @@ async fn write_igvmfile(
     data_path: impl AsRef<Path>,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
-
     eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
 
     // Convert the path to a wide string (UTF-16) for Windows API
@@ -1215,7 +1213,6 @@ async fn write_igvmfile(
         .as_ref()
         .as_os_str()
         .encode_wide()
-        .chain(std::iter::once(0))
         .collect::<Vec<u16>>();
 
     let bytes = read_igvmfile(dll_path, resource_code).await?;
@@ -1232,7 +1229,7 @@ async fn write_igvmfile(
     Ok(())
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -1304,7 +1301,7 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
         }
 
         let bytes = slice::from_raw_parts(res_ptr as *const u8, res_size as usize).to_vec();
-        eprintln!("Successfully loaded IGVMfile from DLL");
+        eprintln!("Successfully loaded IGVMfile from DLL: {:#?}", dll_path);
         eprintln!("Read {} bytes", bytes.len());
 
         FreeLibrary(h_module);
@@ -1490,14 +1487,13 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     #[async_test]
     async fn read_write_igvmfile() {
-        use std::iter::once;
         use std::os::windows::ffi::OsStrExt;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().chain(once(0)).collect();
+        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
@@ -1608,16 +1604,11 @@ mod tests {
     #[cfg(all(windows, with_encryption))]
     #[async_test]
     async fn read_write_igvmfile_encrypted() {
-        use std::iter::once;
         use std::os::windows::ffi::OsStrExt;
         // Should be able to read and write IGVMfile to an encrypted VMGS
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
         let encryption_key = vec![5; 32];
 
         test_vmgs_create(
