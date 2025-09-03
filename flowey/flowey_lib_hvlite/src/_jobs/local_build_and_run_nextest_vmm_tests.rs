@@ -306,6 +306,9 @@ impl SimpleFlowNode for Node {
                         if windows && (tdx || snp || hyperv_vbs) {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
                         }
+                        if ubuntu && (tdx || snp || hyperv_vbs) {
+                            artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
+                        }
                         if ubuntu {
                             artifacts.push(KnownTestArtifacts::Ubuntu2204ServerX64Vhd);
                         }
@@ -393,7 +396,8 @@ impl SimpleFlowNode for Node {
                 let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
                 let (read_built_sidecar, built_sidecar) = ctx.new_var();
                 ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
-                    profile: openvmm_hcl_profile,
+                    build_profile: openvmm_hcl_profile,
+                    release_cfg: release,
                     recipe: recipe.clone(),
                     custom_target: None,
                     built_openvmm_hcl,

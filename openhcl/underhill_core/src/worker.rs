@@ -41,9 +41,11 @@ use crate::emuplat::watchdog::UnderhillWatchdogPlatform;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
-use crate::nvme_manager::NvmeDiskConfig;
-use crate::nvme_manager::NvmeDiskResolver;
-use crate::nvme_manager::NvmeManager;
+use crate::nvme_manager::device::VfioNvmeDriverSpawner;
+use crate::nvme_manager::manager::NvmeDiskConfig;
+use crate::nvme_manager::manager::NvmeDiskResolver;
+use crate::nvme_manager::manager::NvmeManager;
+use crate::options::GuestStateEncryptionPolicyCli;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
@@ -69,6 +71,7 @@ use futures_concurrency::future::Race;
 use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
+use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
@@ -251,6 +254,8 @@ pub struct UnderhillEnvCfg {
     pub vmbus_enable_mnf: Option<bool>,
     /// Force the use of confidential external memory for all non-relay vmbus channels.
     pub vmbus_force_confidential_external_memory: bool,
+    /// Delay before unsticking a vmbus channel after it has been opened.
+    pub vmbus_channel_unstick_delay: Option<Duration>,
     /// Command line to append to VTL0 command line. Only used for linux direct.
     pub cmdline_append: Option<String>,
     /// (dev feature) Reformat VMGS file on boot
@@ -288,6 +293,12 @@ pub struct UnderhillEnvCfg {
     pub test_configuration: Option<TestScenarioConfig>,
     /// Disable the UEFI front page.
     pub disable_uefi_frontpage: bool,
+    /// Guest state encryption policy
+    pub guest_state_encryption_policy: Option<GuestStateEncryptionPolicyCli>,
+    /// Attempt to renew the AK cert
+    pub attempt_ak_cert_callback: Option<bool>,
+    /// Enable the VPCI relay
+    pub enable_vpci_relay: Option<bool>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -726,6 +737,9 @@ impl UhVmNetworkSettings {
         };
         // Complete shutdown on the VFs. Process events on the endpoints to
         // allow for proper shutdown.
+        // run_endpoints is a loop, so the race completes when shutdown_vfs completes.
+        // Also, run_endpoints races wait_for_endpoint_action() so it doesn't guarentee
+        // all endpoints will close their channels before shutdown_vfs completes.
         let _ = (shutdown_vfs, run_endpoints).race().await;
     }
 
@@ -857,6 +871,17 @@ impl UhVmNetworkSettings {
         self.vf_managers.insert(instance_id, vf_manager);
         Ok(save_state)
     }
+
+    async fn accelerated_device_visible_to_guest(&self, visible: bool) -> anyhow::Result<()> {
+        join_all(
+            self.vf_managers
+                .values()
+                .map(|vf_manager| vf_manager.hide_vtl0_instance(!visible)),
+        )
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<()>>()
+    }
 }
 
 #[async_trait]
@@ -945,22 +970,24 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             .await;
     }
 
-    async fn prepare_for_hibernate(&self, rollback: bool) {
+    async fn prepare_for_hibernate(&self) {
         // Remove any accelerated devices before notifying the guest to hibernate.
-        let result = join_all(
-            self.vf_managers
-                .values()
-                .map(|vf_manager| vf_manager.hide_vtl0_instance(!rollback)),
-        )
-        .await
-        .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>();
-        if let Err(err) = result {
+        if let Err(err) = self.accelerated_device_visible_to_guest(false).await {
             tracing::error!(
                 CVM_ALLOWED,
                 error = err.as_ref() as &dyn std::error::Error,
-                rollback,
                 "Failed preparing accelerated network devices for hibernate"
+            );
+        }
+    }
+
+    async fn cancel_prepare_for_hibernate(&self) {
+        // Add back any accelerated devices hidden in preparation for hibernate.
+        if let Err(err) = self.accelerated_device_visible_to_guest(true).await {
+            tracing::error!(
+                CVM_ALLOWED,
+                error = err.as_ref() as &dyn std::error::Error,
+                "Failed restoring accelerated network devices for cancelled hibernate"
             );
         }
     }
@@ -1066,7 +1093,7 @@ fn build_vtl0_memory_layout(
         vtl0_ram = vtl0_memory_layout
             .ram()
             .iter()
-            .map(|r| r.range.to_string())
+            .map(|r| r.to_string())
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 ram"
@@ -1081,6 +1108,16 @@ fn build_vtl0_memory_layout(
             .collect::<Vec<String>>()
             .join(", "),
         "vtl0 mmio"
+    );
+
+    tracing::info!(
+        CVM_ALLOWED,
+        shared_pool = shared_pool
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "shared pool",
     );
 
     Ok(BuiltVtl0MemoryLayout {
@@ -1129,11 +1166,12 @@ fn new_x86_topology(
 fn new_aarch64_topology(
     gic: GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],
+    pmu_gsiv: u32,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {
     // TODO SMP: Query the MT property from the host topology somehow. Device Tree
     // doesn't specify that.
     let gic_redistributors_base = gic.gic_redistributors_base;
-    TopologyBuilder::new_aarch64(gic)
+    TopologyBuilder::new_aarch64(gic, pmu_gsiv)
         .vps_per_socket(cpus.len() as u32)
         .build_with_vp_info(cpus.iter().enumerate().map(|(vp_index, cpu)| {
             let mpidr = aarch64defs::MpidrEl1::from(
@@ -1149,6 +1187,7 @@ fn new_aarch64_topology(
                 mpidr,
                 gicr: gic_redistributors_base
                     + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                pmu_gsiv,
             }
         }))
         .context("failed to construct the processor topology")
@@ -1177,6 +1216,17 @@ async fn new_underhill_vm(
             tracing::info!(CVM_ALLOWED, kernel_boot_time_ns, "kernel boot time");
         }
     }
+
+    let management_vtl_features = {
+        let mut features = dps.general.management_vtl_features;
+        if let Some(value) = env_cfg.attempt_ak_cert_callback {
+            tracing::info!("using attempt_ak_cert_callback={value} from cmdline");
+            features.set_control_ak_cert_provisioning(true);
+            features.set_attempt_ak_cert_callback(value);
+        }
+        features
+    };
+    tracing::info!(management_vtl_features = management_vtl_features.into_bits());
 
     // Read the initial configuration from the IGVM parameters.
     let (runtime_params, measured_vtl2_info) =
@@ -1280,6 +1330,7 @@ async fn new_underhill_vm(
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
         }
+        virt::IsolationType::Vbs => round_up_to_2mb(device_dma + attestation),
         _ if env_cfg.enable_shared_visibility_pool => round_up_to_2mb(device_dma + attestation),
         _ => 0,
     };
@@ -1300,14 +1351,48 @@ async fn new_underhill_vm(
         })
         .collect::<Vec<_>>();
 
+    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
+
+    let mut with_vmbus: bool = false;
+    let mut with_vmbus_relay = false;
+    if dps.general.vmbus_redirection_enabled {
+        with_vmbus = true;
+        // If the guest is isolated but we are hiding this fact, then don't
+        // start the relay--the guest will not be able to use relayed channels
+        // since it will not be able to put their ring buffers in shared memory.
+        with_vmbus_relay = !hide_isolation;
+    }
+
+    let enable_vpci_relay = env_cfg
+        .enable_vpci_relay
+        .unwrap_or(hardware_isolated && !hide_isolation && with_vmbus_relay);
+
+    if enable_vpci_relay && !with_vmbus_relay {
+        anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
+    }
+
+    let mut vtl0_mmio;
+    let (vtl0_mmio, vpci_relay_mmio) = if enable_vpci_relay {
+        // Carve out enough VTL0 MMIO space for 64 devices.
+        let required_len = 64 * vpci_relay::VPCI_RELAY_MMIO_PER_DEVICE;
+        vtl0_mmio = boot_info.vtl0_mmio.to_vec();
+        if vtl0_mmio.last().is_none_or(|r| r.len() < required_len) {
+            anyhow::bail!("too little VTL0 MMIO space to take for the VPCI relay");
+        }
+        let r = vtl0_mmio.last().unwrap();
+        let (rest, vpci) = r.split_at_offset(r.len() - required_len);
+        *vtl0_mmio.last_mut().unwrap() = rest;
+        (&vtl0_mmio, vpci)
+    } else {
+        (&boot_info.vtl0_mmio, MemoryRange::EMPTY)
+    };
+
     let BuiltVtl0MemoryLayout {
         vtl0_memory_map,
         vtl0_memory_layout: mem_layout,
         shared_pool,
         complete_memory_layout,
-    } = build_vtl0_memory_layout(vtl0_memory_map, &boot_info.vtl0_mmio, shared_pool_size)?;
-
-    let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
+    } = build_vtl0_memory_layout(vtl0_memory_map, vtl0_mmio, shared_pool_size)?;
 
     // Determine if x2apic is supported so that the topology matches
     // reality.
@@ -1342,23 +1427,18 @@ async fn new_underhill_vm(
         .context("failed to construct the processor topology")?;
 
     #[cfg(guest_arch = "aarch64")]
-    let processor_topology = new_aarch64_topology(
-        boot_info
-            .gic
-            .context("did not get gic state from bootloader")?,
-        &boot_info.cpus,
-    )
-    .context("failed to construct the processor topology")?;
-
-    let mut with_vmbus: bool = false;
-    let mut with_vmbus_relay = false;
-    if dps.general.vmbus_redirection_enabled {
-        with_vmbus = true;
-        // If the guest is isolated but we are hiding this fact, then don't
-        // start the relay--the guest will not be able to use relayed channels
-        // since it will not be able to put their ring buffers in shared memory.
-        with_vmbus_relay = !hide_isolation;
-    }
+    let processor_topology = {
+        new_aarch64_topology(
+            boot_info
+                .gic
+                .context("did not get gic state from bootloader")?,
+            &boot_info.cpus,
+            boot_info
+                .pmu_gsiv
+                .context("did not get pmu gsiv from bootloader")?,
+        )
+        .context("failed to construct the processor topology")?
+    };
 
     // also construct the VMGS nice and early, as much like the GET, it also
     // plays an important role during initial bringup
@@ -1538,16 +1618,17 @@ async fn new_underhill_vm(
     // Perform a quick validation to make sure each range is appropriately accessible.
     tracing::info!("starting guest memory self test");
     for range in mem_layout.ram() {
-        let gpa = range.range.start();
-        // Standard RAM is accessible.
-        highest_vtl_gm
-            .read_plain::<u8>(gpa)
-            .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
+        for gpa in [range.range.start(), range.range.end() - 1] {
+            // Standard RAM is accessible.
+            highest_vtl_gm
+                .read_plain::<u8>(gpa)
+                .with_context(|| format!("failed to read RAM at {gpa:#x}"))?;
 
-        // It is not initially accessible above VTOM.
-        if let Some(vtom) = vtom {
-            if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
-                anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+            // It is not initially accessible above VTOM.
+            if let Some(vtom) = vtom {
+                if highest_vtl_gm.read_plain::<u8>(gpa | vtom).is_ok() {
+                    anyhow::bail!("RAM at {gpa:#x} is accessible above VTOM");
+                }
             }
         }
     }
@@ -1569,25 +1650,20 @@ async fn new_underhill_vm(
     tracing::info!("guest memory self test complete");
 
     // Set the gpa allocator to GET that is required by the attestation message.
-    //
-    // TODO: VBS does not support attestation, so only do this on non-VBS
-    // platforms for now.
-    if !matches!(isolation, virt::IsolationType::Vbs) {
-        get_client.set_gpa_allocator(
-            dma_manager
-                .new_client(DmaClientParameters {
-                    device_name: "get".into(),
-                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                    allocation_visibility: if isolation.is_isolated() {
-                        AllocationVisibility::Shared
-                    } else {
-                        AllocationVisibility::Private
-                    },
-                    persistent_allocations: false,
-                })
-                .context("get dma client")?,
-        );
-    }
+    get_client.set_gpa_allocator(
+        dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "get".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                allocation_visibility: if isolation.is_isolated() {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
+                persistent_allocations: false,
+            })
+            .context("get dma client")?,
+    );
 
     if confidential_debug_enabled() {
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
@@ -1616,16 +1692,23 @@ async fn new_underhill_vm(
     let attestation_type = match isolation {
         virt::IsolationType::Snp => AttestationType::Snp,
         virt::IsolationType::Tdx => AttestationType::Tdx,
+        virt::IsolationType::Vbs => AttestationType::Vbs,
         virt::IsolationType::None => AttestationType::Host,
-        virt::IsolationType::Vbs => {
-            // VBS not supported yet, fall back to the host type.
-            // Raise an error message instead of aborting so that
-            // we do not block VBS bringup.
-            tracing::error!(CVM_ALLOWED, "VBS attestation not supported yet");
-            // TODO VBS: Support VBS attestation
-            AttestationType::Host
-        }
     };
+
+    // use the encryption policy from the command line if it is provided
+    let guest_state_encryption_policy = env_cfg
+        .guest_state_encryption_policy
+        .map(|p| {
+            tracing::info!("using guest state encryption policy from command line");
+            match p {
+                GuestStateEncryptionPolicyCli::Auto => GuestStateEncryptionPolicy::Auto,
+                GuestStateEncryptionPolicyCli::GspById => GuestStateEncryptionPolicy::GspById,
+                GuestStateEncryptionPolicyCli::GspKey => GuestStateEncryptionPolicy::GspKey,
+                GuestStateEncryptionPolicyCli::None => GuestStateEncryptionPolicy::None,
+            }
+        })
+        .unwrap_or(dps.general.guest_state_encryption_policy);
 
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
@@ -1638,8 +1721,8 @@ async fn new_underhill_vm(
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.
             //
-            // This is an Underhill restart, so the VMGS has already been
-            // restored in its unlocked state
+            // If this is an Underhill restart, the VMGS has already been
+            // restored in its unlocked state.
             underhill_attestation::PlatformAttestationData {
                 host_attestation_settings: underhill_attestation::HostAttestationSettings {
                     refresh_tpm_seeds: false,
@@ -1666,6 +1749,8 @@ async fn new_underhill_vm(
                 attestation_type,
                 suppress_attestation,
                 early_init_driver,
+                guest_state_encryption_policy,
+                management_vtl_features.strict_encryption_policy(),
             )
             .instrument(tracing::info_span!(
                 "initialize_platform_security",
@@ -1730,13 +1815,15 @@ async fn new_underhill_vm(
     // Only advertise extended IOAPIC on non-PCAT systems.
     #[cfg(guest_arch = "x86_64")]
     let cpuid = {
+        let confidential_vmbus = isolation.is_hardware_isolated() && with_vmbus_relay;
         let extended_ioapic_rte = !matches!(firmware_type, FirmwareType::Pcat);
-        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte).collect::<Vec<_>>()
+        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte, confidential_vmbus)
+            .collect::<Vec<_>>()
     };
 
     let (crash_notification_send, crash_notification_recv) = mesh::channel();
 
-    let state_units = StateUnits::new();
+    let mut state_units = StateUnits::new();
 
     // Process VM time timers on VP 0, since that's where most of the
     // vmtime-driven device interrupts will be triggered.
@@ -1885,10 +1972,12 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
-            env_cfg.nvme_always_flr,
-            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
-            dma_manager.client_spawner(),
+            Arc::new(VfioNvmeDriverSpawner {
+                nvme_always_flr: env_cfg.nvme_always_flr,
+                is_isolated: isolation.is_isolated(),
+                dma_client_spawner: dma_manager.client_spawner(),
+            }),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2497,8 +2586,7 @@ async fn new_underhill_vm(
             )
         };
 
-        // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        let ak_cert_type = if !matches!(isolation, virt::IsolationType::Vbs) {
+        let ak_cert_type = {
             let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
                 attestation_type,
                 attestation_vm_config,
@@ -2506,13 +2594,19 @@ async fn new_underhill_vm(
             )
             .into_resource();
 
-            if !matches!(attestation_type, AttestationType::Host) {
-                TpmAkCertTypeResource::HwAttested(request_ak_cert)
-            } else {
-                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            match attestation_type {
+                AttestationType::Snp | AttestationType::Tdx => {
+                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
+                }
+                AttestationType::Vbs => TpmAkCertTypeResource::SwAttested(request_ak_cert),
+                AttestationType::Host
+                    if management_vtl_features.control_ak_cert_provisioning()
+                        && management_vtl_features.attempt_ak_cert_callback() =>
+                {
+                    TpmAkCertTypeResource::Trusted(request_ak_cert)
+                }
+                AttestationType::Host => TpmAkCertTypeResource::TrustedPreProvisionedOnly,
             }
-        } else {
-            TpmAkCertTypeResource::None
         };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
@@ -2533,6 +2627,7 @@ async fn new_underhill_vm(
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
                 logger: Some(GetTpmLoggerHandle.into_resource()),
+                is_confidential_vm: isolation.is_isolated(),
             }
             .into_resource(),
         });
@@ -2671,6 +2766,8 @@ async fn new_underhill_vm(
     let mut vmbus_server = None;
     let mut vmbus_client = None;
     let mut host_vmbus_relay = None;
+    let mut vmbus_filter = None;
+    let mut vpci_relay = None;
 
     // VMBus
     if with_vmbus {
@@ -2720,18 +2817,22 @@ async fn new_underhill_vm(
 
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
-        let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
-            .hvsock_notify(hvsock_notify)
-            .server_relay(server_relay)
-            .max_version(max_version)
-            .delay_max_version(delay_max_version)
-            .enable_mnf(enable_mnf)
-            .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
-            // For saved-state compat with release/2411.
-            .send_messages_while_stopped(true)
-            .build()
-            .context("failed to create vmbus server")?;
+        let vmbus =
+            VmbusServer::builder(driver_source.simple(), synic.clone(), device_memory.clone())
+                .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
+                .hvsock_notify(hvsock_notify)
+                .server_relay(server_relay)
+                .max_version(max_version)
+                .delay_max_version(delay_max_version)
+                .enable_mnf(enable_mnf)
+                .force_confidential_external_memory(
+                    env_cfg.vmbus_force_confidential_external_memory,
+                )
+                .channel_unstick_delay(env_cfg.vmbus_channel_unstick_delay)
+                // For saved-state compat with release/2411.
+                .send_messages_while_stopped(true)
+                .build()
+                .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
@@ -2757,6 +2858,81 @@ async fn new_underhill_vm(
                     .await
                     .context("failed to connect to vmbus")?
             };
+
+            let mut filter = vmbus_client::filter::ClientFilterBuilder::new();
+
+            let mut vpci_filter = vmbus_client::filter::FilterDefinition::new("vpci")
+                .by_interface(guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F"));
+
+            if enable_vpci_relay {
+                filter.add(&mut vpci_filter);
+            }
+
+            let mut relay_filter = vmbus_client::filter::FilterDefinition::new("relay").rest();
+            filter.add(&mut relay_filter);
+            vmbus_filter = Some(filter.build(tp, connection));
+
+            let connection = relay_filter.take();
+
+            if enable_vpci_relay {
+                use vpci_relay::*;
+
+                let mut relay = VpciRelay::new(
+                    driver_source.clone(),
+                    vpci_filter.take(),
+                    vmbus.control().clone(),
+                    dma_manager.new_client(DmaClientParameters {
+                        device_name: "vpci-relay".into(),
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                        allocation_visibility: if hardware_isolated {
+                            AllocationVisibility::Shared
+                        } else {
+                            AllocationVisibility::Private
+                        },
+                        persistent_allocations: false,
+                    })?,
+                    vpci_relay_mmio,
+                    if use_mmio_hypercalls {
+                        Box::new(
+                            linux_mmio::HypercallMmio::new()
+                                .context("failed to create hypercall mmio accessor")?,
+                        )
+                    } else {
+                        Box::new(
+                            linux_mmio::DirectMmio::new()
+                                .context("failed to create direct mmio accessor")?,
+                        )
+                    },
+                );
+
+                // Allow NVMe devices.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: None,
+                    device_id: None,
+                    revision_id: None,
+                    prog_if: Some(
+                        ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
+                    ),
+                    sub_class: Some(Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY),
+                    base_class: Some(ClassCode::MASS_STORAGE_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                // Allow MANA devices.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(gdma_defs::VENDOR_ID),
+                    device_id: Some(gdma_defs::DEVICE_ID),
+                    revision_id: None,
+                    prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
+                    sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
+                    base_class: Some(ClassCode::NETWORK_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                vpci_relay = Some(relay);
+            }
 
             let mut intercept_list = Vec::new();
             if intercept_shutdown_ic {
@@ -2786,7 +2962,7 @@ async fn new_underhill_vm(
             )?);
 
             vmbus_client = Some(client);
-        };
+        }
 
         vmbus_server = Some(vmbus);
     }
@@ -2988,6 +3164,14 @@ async fn new_underhill_vm(
     let (chipset, devices) = chipset_builder.build()?;
     let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(synic.clone(), chipset);
 
+    if let Some(vpci_relay) = &mut vpci_relay {
+        // Relay the initial set of VPCI devices.
+        vpci_relay
+            .process(&devices, &mut state_units)
+            .await
+            .context("failed to relay initial vpci channels")?;
+    }
+
     let control_send = Arc::new(Mutex::new(Some(control_send)));
     let (halt_notify_send, halt_notify_recv) = mesh::channel();
     let halt_task = tp.spawn(
@@ -3054,7 +3238,7 @@ async fn new_underhill_vm(
         memory: gm,
         firmware_type,
         isolation,
-        _chipset_devices: devices,
+        chipset_devices: devices,
         _vmtime: vmtime,
         _halt_task: halt_task,
         state_units,
@@ -3070,6 +3254,8 @@ async fn new_underhill_vm(
         },
         device_interfaces: Some(controllers.device_interfaces),
         vmbus_client,
+        vmbus_filter,
+        vpci_relay,
         vtl0_memory_map,
 
         vmbus_server,
@@ -3109,7 +3295,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         com1_vmbus_redirector: _,
         com2_enabled: _,
         com2_vmbus_redirector: _,
-        suppress_attestation: _,
+        suppress_attestation,
         bios_guid: _,
         vpci_boot_enabled: _,
 
@@ -3125,6 +3311,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         firmware_mode_is_pcat,
         psp_enabled,
         default_boot_always_attempt,
+        guest_state_encryption_policy,
 
         // Minimum level enforced by UEFI loader
         memory_protection_mode: _,
@@ -3154,6 +3341,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vtl2_settings: _,
         cxl_memory_enabled: _,
         guest_state_lifetime: _,
+        management_vtl_features: _,
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3188,6 +3376,20 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *default_boot_always_attempt {
         anyhow::bail!("default_boot_always_attempt is not supported");
+    }
+    // TODO: don't allow auto once all CVMs are configured to require GspKey
+    if !(matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::GspKey | GuestStateEncryptionPolicy::Auto
+    ) || (matches!(
+        guest_state_encryption_policy,
+        GuestStateEncryptionPolicy::None,
+    ) && suppress_attestation.unwrap_or(false)))
+    {
+        anyhow::bail!(
+            "encryption policy not supported: {:?}",
+            guest_state_encryption_policy
+        );
     }
 
     Ok(())
@@ -3369,16 +3571,6 @@ async fn load_firmware(
         .instrument(tracing::info_span!("set_initial_regs", CVM_ALLOWED))
         .await
         .context("failed to set initial registers")?;
-
-    // For compatibility reasons, APs' VTL0 is in the running state at startup.
-    // Send INIT to put them into startup suspend (wait for SIPI) state.
-    #[cfg(guest_arch = "x86_64")]
-    for vp in processor_topology.vps_arch().skip(1) {
-        partition.request_msi(
-            Vtl::Vtl0,
-            MsiRequest::new_x86(virt::irqcon::DeliveryMode::INIT, vp.apic_id, false, 0, true),
-        );
-    }
 
     Ok(())
 }

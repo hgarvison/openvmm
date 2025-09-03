@@ -204,6 +204,8 @@ pub mod artifacts {
     pub mod test_vhd {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
+        use petri_artifacts_common::tags::InitialRebootCondition;
         use petri_artifacts_common::tags::IsTestVhd;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -270,6 +272,13 @@ pub mod artifacts {
         impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::X86_64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
@@ -288,11 +297,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                })
             }
         }
 
@@ -309,11 +317,42 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2204_SERVER_X64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2204_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-22.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 2361655808;
+        }
+
+        declare_artifacts! {
+            /// Ubuntu 24.04 Server X64
+            UBUNTU_2404_SERVER_X64
+        }
+
+        impl IsTestVhd for UBUNTU_2404_SERVER_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
+            const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
+            const SIZE: u64 = 3758211584;
         }
 
         declare_artifacts! {
@@ -324,6 +363,14 @@ pub mod artifacts {
         impl IsTestVhd for UBUNTU_2404_SERVER_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                });
+                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
+                quirks
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
@@ -339,6 +386,13 @@ pub mod artifacts {
         impl IsTestVhd for WINDOWS_11_ENTERPRISE_AARCH64 {
             const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
             const ARCH: MachineArch = MachineArch::Aarch64;
+
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    initial_reboot: Some(InitialRebootCondition::Always),
+                    ..Default::default()
+                })
+            }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for WINDOWS_11_ENTERPRISE_AARCH64 {
@@ -352,6 +406,7 @@ pub mod artifacts {
     pub mod test_iso {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
         use petri_artifacts_common::tags::GuestQuirks;
+        use petri_artifacts_common::tags::GuestQuirksInner;
         use petri_artifacts_common::tags::IsTestIso;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_common::tags::OsFlavor;
@@ -367,14 +422,10 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
 
             fn quirks() -> GuestQuirks {
-                GuestQuirks {
-                    // FreeBSD will ignore shutdown requests that arrive too
-                    // early in the boot process.
-                    //
-                    // Time is set to 5s longer than the VHD, to account for ISO
-                    // boot being slower.
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                }
+                    ..Default::default()
+                })
             }
         }
 
