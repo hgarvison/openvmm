@@ -9815,7 +9815,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
  "windows-core 0.61.2",
- "windows-targets 0.53.3",
 ]
 
 [[package]]
@@ -9839,10 +9838,9 @@ checksum = "c0fdd3ddb90610c7638aa2b3a3ab2904fb9e5cdbecc643ddb3647212781c4ae3"
 dependencies = [
  "windows-implement 0.60.0",
  "windows-interface 0.59.1",
+ "windows-link",
  "windows-result 0.3.4",
  "windows-strings 0.4.2",
- "windows-targets 0.53.3",
- "windows-link",
 ]
 
 [[package]]

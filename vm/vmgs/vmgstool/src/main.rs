@@ -36,10 +36,13 @@ use vmgs_format::VMGS_DEFAULT_CAPACITY;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 use vmgs_format::VmgsHeader;
 use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::libloaderapi::{
-    FindResourceW, LOAD_LIBRARY_AS_DATAFILE, LOAD_LIBRARY_AS_IMAGE_RESOURCE, LoadLibraryExW,
-    LoadResource, LockResource, SizeofResource,
-};
+use winapi::um::libloaderapi::FindResourceW;
+use winapi::um::libloaderapi::LOAD_LIBRARY_AS_DATAFILE;
+use winapi::um::libloaderapi::LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+use winapi::um::libloaderapi::LoadLibraryExW;
+use winapi::um::libloaderapi::LoadResource;
+use winapi::um::libloaderapi::LockResource;
+use winapi::um::libloaderapi::SizeofResource;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
@@ -288,7 +291,7 @@ enum Options {
         /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
-        /// Data file path to read -- vmfirmwarehcl.dll
+        /// DLL file path to read
         #[clap(short = 'd', long, alias = "datapath")]
         data_path: PathBuf,
         #[command(flatten)]
@@ -1187,14 +1190,6 @@ fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<
         if res_loaded.is_null() {
             return Err(Error::UnableToReadIgvmFile(format!(
                 "LoadResource failed: {}",
-                GetLastError()
-            )));
-        }
-
-        let res_ptr = LockResource(res_loaded);
-        if res_ptr.is_null() {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "LockResource failed: {}",
                 GetLastError()
             )));
         }
