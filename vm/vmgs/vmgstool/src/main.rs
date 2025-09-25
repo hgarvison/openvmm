@@ -1112,6 +1112,7 @@ fn vmgs_get_encryption_scheme(vmgs: &Vmgs) -> VmgsEncryptionScheme {
     }
 }
 
+#[cfg(windows)]
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
@@ -1143,8 +1144,8 @@ async fn vmgs_file_copy_igvmfile(
     Ok(())
 }
 
+#[cfg(windows)]
 fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
-    #[cfg(windows)]
     // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
     // which means we will not be executing any of its potentially unsafe functions. We are also
     // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
