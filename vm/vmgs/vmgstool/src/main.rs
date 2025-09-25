@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+// UNSAFETY: Loading a dll is inheritently unsafe
+#![expect(unsafe_code)]
 
 mod storage_backend;
 mod uefi_nvram;
@@ -14,9 +16,12 @@ use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use fs_err::File;
 use pal_async::DefaultPool;
+use std::ffi::OsStr;
 use std::io::prelude::*;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::slice;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
 use vmgs::Error as VmgsError;
@@ -30,6 +35,14 @@ use vmgs_format::VMGS_BYTES_PER_BLOCK;
 use vmgs_format::VMGS_DEFAULT_CAPACITY;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 use vmgs_format::VmgsHeader;
+use winapi::um::errhandlingapi::GetLastError;
+use winapi::um::libloaderapi::FindResourceW;
+use winapi::um::libloaderapi::LOAD_LIBRARY_AS_DATAFILE;
+use winapi::um::libloaderapi::LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+use winapi::um::libloaderapi::LoadLibraryExW;
+use winapi::um::libloaderapi::LoadResource;
+use winapi::um::libloaderapi::LockResource;
+use winapi::um::libloaderapi::SizeofResource;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
@@ -87,6 +100,8 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
+    #[error("Unable to read IGVM file with Error: {0}")]
+    UnableToReadIgvmFile(String),
 }
 
 /// Automation requires certain exit codes to be guaranteed
@@ -112,6 +127,14 @@ enum VmgsEncryptionScheme {
     GspKey,
     GspById,
     None,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(i32)]
+enum ResourceCode {
+    NonConfidential = 13510,
+    Snp = 13515,
+    Tdx = 13520,
 }
 
 #[derive(Args)]
@@ -143,6 +166,7 @@ enum Options {
     /// `keypath` and `encryptionalgorithm` must both be specified if encrypted
     /// guest state is required.
     Create {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// VMGS file size, default = 4194816 (~4MB)
@@ -172,6 +196,7 @@ enum Options {
     ///
     /// The proper key file must be specified to write encrypted data.
     Write {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to read
@@ -191,6 +216,7 @@ enum Options {
     /// is encrypted and no key is specified, the data will be dumped without
     /// decrypting.
     Dump {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Data file path to write
@@ -206,11 +232,13 @@ enum Options {
     },
     /// Dump headers of the VMGS file at `filepath` to the console.
     DumpHeaders {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
     /// Get the size of the specified `fileid` within the VMGS file
     QuerySize {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         #[command(flatten)]
@@ -220,6 +248,7 @@ enum Options {
     ///
     /// Both key files must contain a key that is 32 bytes long.
     UpdateKey {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Current encryption key file path.
@@ -234,6 +263,7 @@ enum Options {
     },
     /// Encrypt an existing VMGS file
     Encrypt {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
         /// Encryption key file path. The file must contain a key that is 32 bytes long.
@@ -245,6 +275,7 @@ enum Options {
     },
     /// Query whether a VMGS file is encrypted
     QueryEncryption {
+        /// VMGS file path
         #[command(flatten)]
         file_path: FilePathArg,
     },
@@ -252,6 +283,25 @@ enum Options {
     UefiNvram {
         #[clap(subcommand)]
         operation: UefiNvramOperation,
+    },
+    /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
+    ///
+    /// The proper key file must be specified to write encrypted data.
+    CopyIgvmfile {
+        /// VMGS file path
+        #[command(flatten)]
+        file_path: FilePathArg,
+        /// DLL file path to read
+        #[clap(short = 'd', long, alias = "datapath")]
+        data_path: PathBuf,
+        #[command(flatten)]
+        key_path: KeyPathArg,
+        /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
+        #[clap(long, alias = "allowoverwrite")]
+        allow_overwrite: bool,
+        /// Resource code. Currently nonconfidential, snp, and tdx are the only values supported.
+        #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
+        resource_code: ResourceCode,
     },
 }
 
@@ -279,6 +329,15 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     match algorithm {
         "AES_GCM" => Ok(EncryptionAlgorithm::AES_GCM),
         _ => Err("Encryption algorithm not supported"),
+    }
+}
+
+fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
+    match resource_code {
+        "nonconfidential" => Ok(ResourceCode::NonConfidential),
+        "snp" => Ok(ResourceCode::Snp),
+        "tdx" => Ok(ResourceCode::Tdx),
+        _ => Err("Resource code not supported"),
     }
 }
 
@@ -446,6 +505,22 @@ async fn do_main() -> Result<(), Error> {
             vmgs_file_query_encryption(file_path.file_path).await
         }
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
+        Options::CopyIgvmfile {
+            file_path,
+            data_path,
+            key_path,
+            allow_overwrite,
+            resource_code,
+        } => {
+            vmgs_file_copy_igvmfile(
+                file_path.file_path,
+                data_path,
+                key_path.key_path,
+                allow_overwrite,
+                resource_code,
+            )
+            .await
+        }
     }
 }
 
@@ -1029,6 +1104,103 @@ fn vmgs_get_encryption_scheme(vmgs: &Vmgs) -> VmgsEncryptionScheme {
         VmgsEncryptionScheme::GspById
     } else {
         VmgsEncryptionScheme::None
+    }
+}
+
+#[cfg(windows)]
+async fn vmgs_file_copy_igvmfile(
+    file_path: impl AsRef<Path>,
+    data_path: impl AsRef<Path>,
+    key_path: Option<impl AsRef<Path>>,
+    allow_overwrite: bool,
+    resource_code: ResourceCode,
+) -> Result<(), Error> {
+    let dll_path = data_path
+        .as_ref()
+        .as_os_str()
+        .encode_wide()
+        .collect::<Vec<u16>>();
+
+    let buf = read_igvmfile(dll_path, resource_code)?;
+    println!("Successfully loaded DLL: {:#?}", data_path.as_ref());
+
+    let encrypt = key_path.is_some();
+    let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite).await?;
+
+    vmgs_write(
+        &mut vmgs,
+        FileId::GUEST_FIRMWARE,
+        &buf,
+        encrypt,
+        allow_overwrite,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
+    // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
+    // which means we will not be executing any of its potentially unsafe functions. We are also
+    // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
+    unsafe {
+        let h_module = LoadLibraryExW(
+            dll_path.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+        );
+        if h_module.is_null() {
+            return Err(Error::UnableToReadIgvmFile(format!(
+                "LoadLibraryExW failed: {}",
+                GetLastError()
+            )));
+        }
+
+        // MAKEINTRESOURCEW equivalent: cast the numeric id into a pointer value
+        let resource_name_ptr = resource_code as usize as *const u16;
+
+        // cast VMFW to correct type
+        let lp_type = OsStr::new("VMFW")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+
+        let res_info = FindResourceW(h_module, resource_name_ptr, lp_type.as_ptr());
+        if res_info.is_null() {
+            return Err(Error::UnableToReadIgvmFile(format!(
+                "FindResourceW failed: {}",
+                GetLastError()
+            )));
+        }
+
+        let res_size = SizeofResource(h_module, res_info);
+        if res_size == 0 {
+            return Err(Error::UnableToReadIgvmFile(format!(
+                "SizeofResource failed: {}",
+                GetLastError()
+            )));
+        }
+
+        let res_loaded = LoadResource(h_module, res_info);
+        if res_loaded.is_null() {
+            return Err(Error::UnableToReadIgvmFile(format!(
+                "LoadResource failed: {}",
+                GetLastError()
+            )));
+        }
+
+        let res_ptr = LockResource(res_loaded);
+        if res_ptr.is_null() {
+            return Err(Error::UnableToReadIgvmFile(format!(
+                "LockResource failed: {}",
+                GetLastError()
+            )));
+        }
+
+        let bytes = slice::from_raw_parts(res_ptr as *const u8, res_size as usize).to_vec();
+
+        Ok(bytes)
     }
 }
 
