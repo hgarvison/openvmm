@@ -1502,6 +1502,10 @@ mod tests {
         let mut vmgs = test_vmgs_open(path, OpenMode::ReadWrite, None)
             .await
             .unwrap();
+        eprintln!("File exists: {}", data_path.exists());
+        eprintln!("File path: {:?}", data_path);
+        eprintln!("File path: {:?}", dll_path);
+        eprintln!("Canonical path: {:?}", data_path.canonicalize());
 
         let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
 
