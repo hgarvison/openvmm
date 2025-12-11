@@ -1243,7 +1243,6 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
     use winapi::um::libloaderapi::LoadResource;
     use winapi::um::libloaderapi::LockResource;
     use winapi::um::libloaderapi::SizeofResource;
-    eprintln!("Loading DLL: {:#?}", dll_path);
     // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
     // which means we will not be executing any of its potentially unsafe functions. We are also
     // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
@@ -1492,10 +1491,16 @@ mod tests {
     #[async_test]
     async fn read_write_igvmfile() {
         use std::os::windows::ffi::OsStrExt;
+        use std::fs;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
         let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
 
+        let paths = fs::read_dir("C:\\Windows\\System32").unwrap();
+
+        for path in paths {
+            println!("Name: {}", path.unwrap().path().display());
+        }
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
             .unwrap();
