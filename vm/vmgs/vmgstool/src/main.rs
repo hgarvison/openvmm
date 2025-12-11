@@ -1491,9 +1491,12 @@ mod tests {
     #[async_test]
     async fn read_write_igvmfile() {
         use std::os::windows::ffi::OsStrExt;
+        use std::iter::once;
+
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
+        // let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
+        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().chain(once(0)).collect();
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
@@ -1505,7 +1508,6 @@ mod tests {
         eprintln!("File exists: {}", data_path.exists());
         eprintln!("File path: {:?}", data_path);
         eprintln!("File path: {:?}", dll_path);
-        eprintln!("Canonical path: {:?}", data_path.canonicalize());
 
         let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
 
