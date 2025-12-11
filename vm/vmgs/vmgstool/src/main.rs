@@ -1243,10 +1243,10 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
     use winapi::um::libloaderapi::LoadResource;
     use winapi::um::libloaderapi::LockResource;
     use winapi::um::libloaderapi::SizeofResource;
+    eprintln!("Loading DLL: {:#?}", dll_path);
     // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
     // which means we will not be executing any of its potentially unsafe functions. We are also
     // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
-    eprintln!("Loading DLL: {:#?}", dll_path);
     unsafe {
         let h_module = LoadLibraryExW(
             dll_path.as_ptr(),
