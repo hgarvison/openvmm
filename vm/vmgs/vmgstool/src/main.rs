@@ -1205,8 +1205,8 @@ async fn write_igvmfile(
     data_path: impl AsRef<Path>,
     resource_code: ResourceCode,
 ) -> Result<(), Error> {
-    use std::os::windows::ffi::OsStrExt;
     use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
 
     eprintln!("Reading IGVMfile from: {}", data_path.as_ref().display());
 
@@ -1493,8 +1493,8 @@ mod tests {
     #[cfg(all(windows, guest_arch = "x86_64"))]
     #[async_test]
     async fn read_write_igvmfile() {
-        use std::os::windows::ffi::OsStrExt;
         use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
         let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().chain(once(0)).collect();
@@ -1608,12 +1608,16 @@ mod tests {
     #[cfg(all(windows, with_encryption))]
     #[async_test]
     async fn read_write_igvmfile_encrypted() {
-        use std::os::windows::ffi::OsStrExt;
         use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
         // Should be able to read and write IGVMfile to an encrypted VMGS
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
-        let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let dll_path: Vec<u16> = data_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let encryption_key = vec![5; 32];
 
         test_vmgs_create(
