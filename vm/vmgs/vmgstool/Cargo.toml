@@ -22,6 +22,7 @@ disk_vhd1.workspace = true
 uefi_nvram_storage.workspace = true
 guid.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true
+hvlite_pcat_locator.workspace = true
 pal_async.workspace = true
 uefi_nvram_specvars.workspace = true
 uefi_specs.workspace = true
@@ -38,13 +39,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 ucs2.workspace = true
-
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "libloaderapi",
-  "errhandlingapi",
-]
-workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
