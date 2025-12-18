@@ -1232,85 +1232,129 @@ async fn write_igvmfile(
     Ok(())
 }
 
+// #[cfg(all(windows, guest_arch = "x86_64"))]
+// async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
+//     use std::ffi::OsStr;
+//     use std::os::windows::ffi::OsStrExt;
+//     use std::slice;
+//     use winapi::um::errhandlingapi::GetLastError;
+//     use winapi::um::libloaderapi::FindResourceW;
+//     use winapi::um::libloaderapi::FreeLibrary;
+//     use winapi::um::libloaderapi::LOAD_LIBRARY_AS_DATAFILE;
+//     use winapi::um::libloaderapi::LOAD_LIBRARY_AS_IMAGE_RESOURCE;
+//     use winapi::um::libloaderapi::LoadLibraryExW;
+//     use winapi::um::libloaderapi::LoadResource;
+//     use winapi::um::libloaderapi::LockResource;
+//     use winapi::um::libloaderapi::SizeofResource;
+//     // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
+//     // which means we will not be executing any of its potentially unsafe functions. We are also
+//     // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
+//     unsafe {
+//         let h_module = LoadLibraryExW(
+//             dll_path.as_ptr(),
+//             std::ptr::null_mut(),
+//             LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
+//         );
+//         if h_module.is_null() {
+//             return Err(Error::UnableToReadIgvmFile(format!(
+//                 "LoadLibraryExW failed: {}",
+//                 GetLastError()
+//             )));
+//         }
+
+//         // MAKEINTRESOURCEW equivalent: cast the numeric id into a pointer value
+//         let resource_name_ptr = resource_code as usize as *const u16;
+
+//         // cast VMFW to correct type
+//         let lp_type = OsStr::new("VMFW")
+//             .encode_wide()
+//             .chain(std::iter::once(0))
+//             .collect::<Vec<u16>>();
+
+//         let res_info = FindResourceW(h_module, resource_name_ptr, lp_type.as_ptr());
+//         if res_info.is_null() {
+//             return Err(Error::UnableToReadIgvmFile(format!(
+//                 "FindResourceW failed: {}",
+//                 GetLastError()
+//             )));
+//         }
+
+//         let res_size = SizeofResource(h_module, res_info);
+//         if res_size == 0 {
+//             return Err(Error::UnableToReadIgvmFile(format!(
+//                 "SizeofResource failed: {}",
+//                 GetLastError()
+//             )));
+//         }
+
+//         let res_loaded = LoadResource(h_module, res_info);
+//         if res_loaded.is_null() {
+//             return Err(Error::UnableToReadIgvmFile(format!(
+//                 "LoadResource failed: {}",
+//                 GetLastError()
+//             )));
+//         }
+
+//         let res_ptr = LockResource(res_loaded);
+//         if res_ptr.is_null() {
+//             return Err(Error::UnableToReadIgvmFile(format!(
+//                 "LockResource failed: {}",
+//                 GetLastError()
+//             )));
+//         }
+
+//         let bytes = slice::from_raw_parts(res_ptr as *const u8, res_size as usize).to_vec();
+//         eprintln!("Successfully loaded IGVMfile from DLL");
+//         eprintln!("Read {} bytes", bytes.len());
+
+//         FreeLibrary(h_module);
+
+//         Ok(bytes)
+//     }
+// }
+
 #[cfg(all(windows, guest_arch = "x86_64"))]
-async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use std::slice;
-    use winapi::um::errhandlingapi::GetLastError;
-    use winapi::um::libloaderapi::FindResourceW;
-    use winapi::um::libloaderapi::FreeLibrary;
-    use winapi::um::libloaderapi::LOAD_LIBRARY_AS_DATAFILE;
-    use winapi::um::libloaderapi::LOAD_LIBRARY_AS_IMAGE_RESOURCE;
-    use winapi::um::libloaderapi::LoadLibraryExW;
-    use winapi::um::libloaderapi::LoadResource;
-    use winapi::um::libloaderapi::LockResource;
-    use winapi::um::libloaderapi::SizeofResource;
-    // SAFETY: We are loading a DLL and reading its resources as a datafile or image resource,
-    // which means we will not be executing any of its potentially unsafe functions. We are also
-    // taking precautions to ensure safety by validating all pointers and handling errors appropriately.
-    unsafe {
-        let h_module = LoadLibraryExW(
-            dll_path.as_ptr(),
-            std::ptr::null_mut(),
-            LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
-        );
-        if h_module.is_null() {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "LoadLibraryExW failed: {}",
-                GetLastError()
-            )));
-        }
+async fn read_igvmfile(file_path: impl AsRef<Path>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
+    use std::io::{Read, Seek, SeekFrom};
 
-        // MAKEINTRESOURCEW equivalent: cast the numeric id into a pointer value
-        let resource_name_ptr = resource_code as usize as *const u16;
+    let file = File::open(file_path.as_ref()).map_err(|e| {
+        Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e))
+    })?;
 
-        // cast VMFW to correct type
-        let lp_type = OsStr::new("VMFW")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<u16>>();
+    // Create a descriptor for the VMFW resource with the given ID
+    let descriptor = DllResourceDescriptor {
+        resource_type: [
+            b'V', 0, b'M', 0, b'F', 0, b'W', 0,
+        ],
+        id: resource_code as u32,
+    };
 
-        let res_info = FindResourceW(h_module, resource_name_ptr, lp_type.as_ptr());
-        if res_info.is_null() {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "FindResourceW failed: {}",
-                GetLastError()
-            )));
-        }
+    // Try to find the resource in the DLL
+    let (start, len) = hvlite_pcat_locator::try_find_resource_from_dll(&file, &descriptor)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
+        .ok_or_else(|| Error::UnableToReadIgvmFile(
+            "File is not a valid PE DLL or resource not found".to_string()
+        ))?;
 
-        let res_size = SizeofResource(h_module, res_info);
-        if res_size == 0 {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "SizeofResource failed: {}",
-                GetLastError()
-            )));
-        }
+    // Read the resource data
+    let mut file = file;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to seek to resource: {}", e)))?;
 
-        let res_loaded = LoadResource(h_module, res_info);
-        if res_loaded.is_null() {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "LoadResource failed: {}",
-                GetLastError()
-            )));
-        }
+    let mut bytes = vec![0u8; len];
+    file.read_exact(&mut bytes)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to read resource data: {}", e)))?;
 
-        let res_ptr = LockResource(res_loaded);
-        if res_ptr.is_null() {
-            return Err(Error::UnableToReadIgvmFile(format!(
-                "LockResource failed: {}",
-                GetLastError()
-            )));
-        }
+    eprintln!("Successfully loaded IGVMfile from DLL");
+    eprintln!("Read {} bytes", bytes.len());
 
-        let bytes = slice::from_raw_parts(res_ptr as *const u8, res_size as usize).to_vec();
-        eprintln!("Successfully loaded IGVMfile from DLL");
-        eprintln!("Read {} bytes", bytes.len());
+    Ok(bytes)
+}
 
-        FreeLibrary(h_module);
-
-        Ok(bytes)
-    }
+#[cfg(all(windows, guest_arch = "x86_64"))]
+struct DllResourceDescriptor {
+    resource_type: [u8; 8],
+    id: u32,
 }
 
 fn validate_size(file_size: u64) -> Result<(), Error> {
