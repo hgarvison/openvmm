@@ -33,6 +33,14 @@ fn system32_path() -> String {
     format!("{windows_dir}\\System32")
 }
 
+/// expose function for parsing a dll resource
+pub fn try_find_resource_from_dll(
+    file: &fs_err::File,
+    descriptor: &DllResourceDescriptor,
+) -> anyhow::Result<Option<(u64, usize)>> {
+    resource_dll_parser::try_find_resource_from_dll(file, descriptor)
+}
+
 /// Attempt to automatically find and open the PCAT BIOS. Will always prefer
 /// the more recently updated vmfirmwarepcat.dll over vmfirmware.dll.
 pub fn find_pcat_bios(command_line_path: Option<&Path>) -> anyhow::Result<RomFileLocation> {
@@ -152,14 +160,14 @@ fn parse_rom_file(
     })
 }
 
-pub(crate) struct DllResourceDescriptor {
+pub struct DllResourceDescriptor {
     /// 4 characters encoded in LE UTF-16
     resource_type: [u8; 8],
     id: u32,
 }
 
 impl DllResourceDescriptor {
-    const fn new(resource_type: &[u8; 4], id: u32) -> Self {
+    pub const fn new(resource_type: &[u8; 4], id: u32) -> Self {
         Self {
             id,
             // Convert to LE UTF-16, only support ASCII names today
