@@ -9341,6 +9341,7 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hex",
+ "hvlite_pcat_locator",
  "pal_async",
  "serde",
  "serde_json",
@@ -9352,7 +9353,6 @@ dependencies = [
  "uefi_specs",
  "vmgs",
  "vmgs_format",
- "winapi",
 ]
 
 [[package]]
