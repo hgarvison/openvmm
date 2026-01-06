@@ -1324,19 +1324,12 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
         Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e))
     })?;
 
-    // Create a descriptor for the VMFW resource with the given ID
-    let descriptor = hvlite_pcat_locator::DllResourceDescriptor::new(
-        b"VMFW",
-        resource_code as u32,
-    );
-
     // Try to find the resource in the DLL
-    let (start, len) = hvlite_pcat_locator::try_find_resource_from_dll(&file, &descriptor)
+    let (start, len) = hvlite_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
         .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
         .ok_or_else(|| Error::UnableToReadIgvmFile(
             "File is not a valid PE DLL or resource not found".to_string()
         ))?;
-
     // Read the resource data
     let mut file = file;
     file.seek(SeekFrom::Start(start))

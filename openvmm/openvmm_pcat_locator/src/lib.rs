@@ -36,9 +36,15 @@ fn system32_path() -> String {
 /// expose function for parsing a dll resource
 pub fn try_find_resource_from_dll(
     file: &fs_err::File,
-    descriptor: &DllResourceDescriptor,
+    resource_type: &[u8; 4],
+    resource_code: u32,
 ) -> anyhow::Result<Option<(u64, usize)>> {
-    resource_dll_parser::try_find_resource_from_dll(file, descriptor)
+    // Create a descriptor for the VMFW resource with the given ID
+    let descriptor = DllResourceDescriptor::new(
+        resource_type,
+        resource_code,
+    );
+    resource_dll_parser::try_find_resource_from_dll(file, &descriptor)
 }
 
 /// Attempt to automatically find and open the PCAT BIOS. Will always prefer
@@ -161,14 +167,14 @@ fn parse_rom_file(
 }
 
 /// Descriptor for locating a resource within a DLL file.
-pub struct DllResourceDescriptor {
+struct DllResourceDescriptor {
     resource_type: [u8; 8],
     id: u32,
 }
 
 impl DllResourceDescriptor {
     /// Creates a new DLL resource descriptor with the specified resource type and ID.
-    pub const fn new(resource_type: &[u8; 4], id: u32) -> Self {
+    const fn new(resource_type: &[u8; 4], id: u32) -> Self {
         Self {
             id,
             // Convert to LE UTF-16, only support ASCII names today
