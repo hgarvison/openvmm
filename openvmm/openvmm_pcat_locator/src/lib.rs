@@ -160,13 +160,14 @@ fn parse_rom_file(
     })
 }
 
+/// Descriptor for locating a resource within a DLL file.
 pub struct DllResourceDescriptor {
-    /// 4 characters encoded in LE UTF-16
     resource_type: [u8; 8],
     id: u32,
 }
 
 impl DllResourceDescriptor {
+    /// Creates a new DLL resource descriptor with the specified resource type and ID.
     pub const fn new(resource_type: &[u8; 4], id: u32) -> Self {
         Self {
             id,
