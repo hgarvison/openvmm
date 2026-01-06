@@ -3,7 +3,7 @@
 
 #![expect(missing_docs)]
 // UNSAFETY: Loading a dll is inheritently unsafe
-#![cfg_attr(windows, expect(unsafe_code))]
+// #![cfg_attr(windows, expect(unsafe_code))]
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]
@@ -1320,7 +1320,7 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
     // Convert the wide string back to a PathBuf
     let path = PathBuf::from(OsString::from_wide(&dll_path));
 
-    let file =  fs_err::File::open(&path).map_err(|e| {
+    let file =  File::open(&path).map_err(|e| {
         Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e))
     })?;
 
