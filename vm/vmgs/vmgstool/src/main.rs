@@ -1310,7 +1310,7 @@ async fn write_igvmfile(
 //     }
 // }
 
-#[cfg(all(windows))]
+#[cfg(windows)]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::io::{Read, Seek, SeekFrom};
     use std::ffi::OsString;
@@ -1326,7 +1326,7 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
 
     // Create a descriptor for the VMFW resource with the given ID
     let descriptor = hvlite_pcat_locator::DllResourceDescriptor::new(
-        &[b'V', b'M', b'F', b'W'],
+        b"VMFW",
         resource_code as u32,
     );
 
