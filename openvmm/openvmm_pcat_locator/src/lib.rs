@@ -40,10 +40,7 @@ pub fn try_find_resource_from_dll(
     resource_code: u32,
 ) -> anyhow::Result<Option<(u64, usize)>> {
     // Create a descriptor for the VMFW resource with the given ID
-    let descriptor = DllResourceDescriptor::new(
-        resource_type,
-        resource_code,
-    );
+    let descriptor = DllResourceDescriptor::new(resource_type, resource_code);
     resource_dll_parser::try_find_resource_from_dll(file, &descriptor)
 }
 

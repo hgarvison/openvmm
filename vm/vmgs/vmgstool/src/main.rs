@@ -1231,24 +1231,26 @@ async fn write_igvmfile(
 
 #[cfg(windows)]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
-    use std::io::{Read, Seek, SeekFrom};
     use std::ffi::OsString;
+    use std::io::{Read, Seek, SeekFrom};
     use std::os::windows::ffi::OsStringExt;
 
     eprintln!("Reading IGVMfile from DLL");
     // Convert the wide string back to a PathBuf
     let path = PathBuf::from(OsString::from_wide(&dll_path));
 
-    let file =  File::open(&path).map_err(|e| {
-        Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e))
-    })?;
+    let file = File::open(&path)
+        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to open DLL file: {}", e)))?;
 
     // Try to find the resource in the DLL
-    let (start, len) = hvlite_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
-        .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
-        .ok_or_else(|| Error::UnableToReadIgvmFile(
-            "File is not a valid PE DLL or resource not found".to_string()
-        ))?;
+    let (start, len) =
+        hvlite_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
+            .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
+            .ok_or_else(|| {
+                Error::UnableToReadIgvmFile(
+                    "File is not a valid PE DLL or resource not found".to_string(),
+                )
+            })?;
     // Read the resource data
     let mut file = file;
     file.seek(SeekFrom::Start(start))
