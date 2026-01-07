@@ -1264,7 +1264,6 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
     Ok(bytes)
 }
 
-
 fn validate_size(file_size: u64) -> Result<(), Error> {
     const MAX_VMGS_FILE_SIZE: u64 = 4 * ONE_GIGA_BYTE;
 
