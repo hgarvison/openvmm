@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-// UNSAFETY: Loading a dll is inheritently unsafe
-// #![cfg_attr(windows, expect(unsafe_code))]
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]
@@ -131,7 +129,7 @@ enum ExitCode {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 enum ResourceCode {
     NonConfidential = 13510,
     Snp = 13515,
@@ -296,7 +294,7 @@ enum Options {
     /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
     ///
     /// The proper key file must be specified to write encrypted data.
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     CopyIgvmfile {
         /// VMGS file path
         #[command(flatten)]
@@ -342,7 +340,7 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
     match resource_code {
         "nonconfidential" => Ok(ResourceCode::NonConfidential),
@@ -522,7 +520,7 @@ async fn do_main() -> Result<(), Error> {
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
-        #[cfg(windows)]
+        #[cfg(all(windows, target_arch = "x86_64"))]
         Options::CopyIgvmfile {
             file_path,
             data_path,
@@ -1172,7 +1170,7 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     Ok(disk)
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
@@ -1197,7 +1195,7 @@ async fn vmgs_file_copy_igvmfile(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 async fn write_igvmfile(
     vmgs: &mut Vmgs,
     encrypt: bool,
@@ -1229,7 +1227,7 @@ async fn write_igvmfile(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::ffi::OsString;
     use std::io::{Read, Seek, SeekFrom};
@@ -1443,7 +1441,7 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, target_arch = "x86_64"))]
     #[async_test]
     async fn read_write_igvmfile() {
         use std::os::windows::ffi::OsStrExt;
