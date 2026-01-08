@@ -307,7 +307,7 @@ enum Options {
         /// Overwrite the VMGS data at `fileid 8`, even if it already exists with nonzero size
         #[clap(long, alias = "allowoverwrite")]
         allow_overwrite: bool,
-        /// Resource code. Currently nonconfidential, snp, and tdx are the only values supported.
+        /// Resource code. Supported values: nonconfidential, snp, tdx, snp_no_hcl, and tdx_no_hcl
         #[clap(short = 'r', long, alias = "resourcecode", value_parser = parse_resource_code)]
         resource_code: ResourceCode,
     },
