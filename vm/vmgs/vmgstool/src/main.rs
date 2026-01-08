@@ -1242,7 +1242,7 @@ async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Resul
 
     // Try to find the resource in the DLL
     let (start, len) =
-        hvlite_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
+        openvmm_pcat_locator::try_find_resource_from_dll(&file, b"VMFW", resource_code as u32)
             .map_err(|e| Error::UnableToReadIgvmFile(format!("Failed to parse DLL: {}", e)))?
             .ok_or_else(|| {
                 Error::UnableToReadIgvmFile(
