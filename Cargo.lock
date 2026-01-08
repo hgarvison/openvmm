@@ -9333,6 +9333,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "build_rs_guest_arch",
  "clap",
  "disk_backend",
  "disk_vhd1",
