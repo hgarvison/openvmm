@@ -1456,8 +1456,8 @@ mod tests {
         let vmfirmware_path = PathBuf::from("C:\\Windows\\System32\\vmfirmware.dll");
         let vmfirmware_dll_path: Vec<u16> = vmfirmware_path.as_os_str().encode_wide().collect();
         
-        let hcl_buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
-        let standard_buf = read_igvmfile(vmfirmware_dll_path, ResourceCode::Snp).await.unwrap();
+        let hcl_buf = read_igvmfile(dll_path, ResourceCode::NonConfidential).await.unwrap();
+        let standard_buf = read_igvmfile(vmfirmware_dll_path, ResourceCode::NonConfidential).await.unwrap();
         
         eprintln!("vmfirmwarehcl.dll IGVM size: {} bytes", hcl_buf.len());
         eprintln!("vmfirmware.dll IGVM size: {} bytes", standard_buf.len());
