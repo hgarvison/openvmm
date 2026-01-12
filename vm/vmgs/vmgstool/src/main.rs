@@ -1448,19 +1448,22 @@ mod tests {
     #[async_test]
     async fn read_write_igvmfile() {
         use std::os::windows::ffi::OsStrExt;
-        use std::fs;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
         let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
 
-        // Change this to the directory you want to list
-        let dir_path = "C:\\Windows\\System32";
-
-        let paths = fs::read_dir(dir_path).unwrap();
-
-        for path in paths {
-            println!("Name: {}", path.unwrap().path().display())
-        }
+        // compare contents of vmfirmwarehcl.dll to vmfirmware.dll
+        let vmfirmware_path = PathBuf::from("C:\\Windows\\System32\\vmfirmware.dll");
+        let vmfirmware_dll_path: Vec<u16> = vmfirmware_path.as_os_str().encode_wide().collect();
+        
+        let hcl_buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
+        let standard_buf = read_igvmfile(vmfirmware_dll_path, ResourceCode::Snp).await.unwrap();
+        
+        eprintln!("vmfirmwarehcl.dll IGVM size: {} bytes", hcl_buf.len());
+        eprintln!("vmfirmware.dll IGVM size: {} bytes", standard_buf.len());
+        
+        // The two DLLs should contain different IGVM files
+        assert_ne!(hcl_buf, standard_buf, "vmfirmwarehcl.dll and vmfirmware.dll should have different IGVM content");
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
@@ -1470,8 +1473,6 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
-
         write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
             .await
             .unwrap();
@@ -1480,7 +1481,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(buf, read_buf);
+        assert_eq!(hcl_buf, read_buf);
     }
 
     #[cfg(with_encryption)]
