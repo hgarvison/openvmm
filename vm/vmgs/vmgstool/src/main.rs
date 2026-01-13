@@ -93,7 +93,7 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     #[error("Unable to read IGVM file with Error: {0}")]
     UnableToReadIgvmFile(String),
 }
@@ -129,7 +129,7 @@ enum ExitCode {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(i32)]
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 enum ResourceCode {
     NonConfidential = 13510,
     Snp = 13515,
@@ -294,7 +294,7 @@ enum Options {
     /// Copy the IGVM file from a dll into file ID 8 of the VMGS file.
     ///
     /// The proper key file must be specified to write encrypted data.
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     CopyIgvmfile {
         /// VMGS file path
         #[command(flatten)]
@@ -343,7 +343,7 @@ fn parse_encryption_algorithm(algorithm: &str) -> Result<EncryptionAlgorithm, &'
     }
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 fn parse_resource_code(resource_code: &str) -> Result<ResourceCode, &'static str> {
     match resource_code {
         "nonconfidential" => Ok(ResourceCode::NonConfidential),
@@ -523,7 +523,7 @@ async fn do_main() -> Result<(), Error> {
         Options::UefiNvram { operation } => uefi_nvram::do_command(operation).await,
         #[cfg(feature = "test_helpers")]
         Options::Test { operation } => test::do_command(operation).await,
-        #[cfg(all(windows, guest_arch = "x86_64"))]
+        #[cfg(windows)]
         Options::CopyIgvmfile {
             file_path,
             data_path,
@@ -1173,7 +1173,7 @@ fn vhdfiledisk_open(file: File, open_mode: OpenMode) -> Result<Disk, Error> {
     Ok(disk)
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn vmgs_file_copy_igvmfile(
     file_path: impl AsRef<Path>,
     data_path: impl AsRef<Path>,
@@ -1198,7 +1198,7 @@ async fn vmgs_file_copy_igvmfile(
     Ok(())
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn write_igvmfile(
     vmgs: &mut Vmgs,
     encrypt: bool,
@@ -1230,7 +1230,7 @@ async fn write_igvmfile(
     Ok(())
 }
 
-#[cfg(all(windows, guest_arch = "x86_64"))]
+#[cfg(windows)]
 async fn read_igvmfile(dll_path: Vec<u16>, resource_code: ResourceCode) -> Result<Vec<u8>, Error> {
     use std::ffi::OsString;
     use std::io::{Read, Seek, SeekFrom};
@@ -1444,13 +1444,26 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(all(windows, guest_arch = "x86_64"))]
+    #[cfg(windows)]
     #[async_test]
     async fn read_write_igvmfile() {
         use std::os::windows::ffi::OsStrExt;
         let (_dir, path) = new_path();
         let data_path = PathBuf::from("C:\\Windows\\System32\\vmfirmwarehcl.dll");
         let dll_path: Vec<u16> = data_path.as_os_str().encode_wide().collect();
+
+        // compare contents of vmfirmwarehcl.dll to vmfirmware.dll
+        let vmfirmware_path = PathBuf::from("C:\\Windows\\System32\\vmfirmware.dll");
+        let vmfirmware_dll_path: Vec<u16> = vmfirmware_path.as_os_str().encode_wide().collect();
+        
+        let hcl_buf = read_igvmfile(dll_path, ResourceCode::NonConfidential).await.unwrap();
+        let standard_buf = read_igvmfile(vmfirmware_dll_path, ResourceCode::NonConfidential).await.unwrap();
+        
+        eprintln!("vmfirmwarehcl.dll IGVM size: {} bytes", hcl_buf.len());
+        eprintln!("vmfirmware.dll IGVM size: {} bytes", standard_buf.len());
+        
+        // The two DLLs should contain different IGVM files
+        assert_ne!(hcl_buf, standard_buf, "vmfirmwarehcl.dll and vmfirmware.dll should have different IGVM content");
 
         test_vmgs_create(&path, Some(ONE_MEGA_BYTE * 8), false, None)
             .await
@@ -1460,8 +1473,6 @@ mod tests {
             .await
             .unwrap();
 
-        let buf = read_igvmfile(dll_path, ResourceCode::Snp).await.unwrap();
-
         write_igvmfile(&mut vmgs, false, false, data_path, ResourceCode::Snp)
             .await
             .unwrap();
@@ -1470,7 +1481,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(buf, read_buf);
+        assert_eq!(hcl_buf, read_buf);
     }
 
     #[cfg(with_encryption)]
